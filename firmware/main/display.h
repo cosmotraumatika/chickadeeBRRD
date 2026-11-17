@@ -22,8 +22,9 @@ bool display_ready(void);
 // given (for example why the last session ended), else the firmware version.
 void display_show_idle(const char *fw_version, const char *note);
 
-// Session screen: "ACTIVE", the signal type, and the time left as m:ss.
-void display_show_tx(const char *signal, int seconds_left);
+// Session screen: "ACTIVE", the signal type, the time left as m:ss, and a
+// one-line note along the bottom (up to 19 characters).
+void display_show_tx(const char *signal, int seconds_left, const char *note);
 
 // Show a message under the product name. Bytes outside printable ASCII are
 // drawn as '?'. Text longer than the screen holds is cut off.

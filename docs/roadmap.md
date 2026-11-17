@@ -8,7 +8,7 @@ the bench.
 | 0. Bench | Stick visible to the build machine | The serial port survives a reset | Done 2026-11-16 |
 | 1. Hello, stick | Protocol v0, `info`, `status`, `display` | The screen shows a message sent from the CLI | Done 2026-11-16 |
 | 2. Lease | `start` and `stop`, with the LED standing in for the radio | Killing the CLI stops the session within 3 seconds | Done 2026-11-16 |
-| 3. One signal | Bluetooth 4 Remote ID | A bench receiver sees it | Next |
+| 3. One signal | Bluetooth 4 Remote ID | A bench receiver sees it | Built 2026-11-16; not yet received on the bench |
 | 4. Windows | The same CLI built natively | It works on a COM port | Not started |
 | 5. Android | A Kotlin app on the same protocol, using the phone's GPS | Start and stop from the phone | Not started |
 | 6. Polish and share | First-launch safety notice, clean screens | A friend can use it unaided | Not started |
@@ -19,6 +19,12 @@ the bench.
 - Killing the host process stops the session within 3 seconds.
 - A session left running stops itself at 5 minutes.
 - The screen and the LED both follow the session state.
+
+## What phase 3 still has to show on hardware
+
+- A bench receiver decodes the four messages and shows the test identity.
+- Killing the host process takes the signal off the air within 3 seconds.
+- The received signal strength steps down with the power setting.
 
 ## Decisions so far
 
@@ -32,14 +38,17 @@ the bench.
 | Session model | A lease the host must keep renewing | A dead or unplugged host cannot leave a session running |
 | Laptop location | Fixed latitude and longitude supplied by the host | The laptop has no GPS; gpsd can come later |
 
-## Decided for phase 3, not yet built
+| Test identity | A Specific Session ID in the private range, `CHICKADEEBRRD-TEST`, plus the Self-ID text `chickadeeBRRD:TEST` | The standard defines no test flag; this claims to be neither a serial number nor a registration |
+| Who sets the identity | The firmware, never the host | A tester should not be able to imitate an aircraft |
+| Power | -24 dBm by default, 0 dBm at most, by request only | Enough for a bench; the ceiling is far below what the chip can do |
+| Duration | 5 minutes by default, up to 60 minutes by request | Long tests are possible but never the default |
+| Message encoder | The Open Drone ID reference library, unmodified | Receivers are tested against it; no encoder of our own to get wrong |
 
-- **Identity:** a fixed, self-declaring test identity that the host cannot change.
-- **Location:** the host must supply latitude and longitude with every start.
-- **Power:** the lowest setting by default; a higher setting only when asked
-  for explicitly.
-- **Duration:** 5 minutes by default; longer only when asked for explicitly,
-  and never more than 60 minutes.
+## Next within phase 3
+
+- Receive the signal on the bench and record what the receiver shows.
+- Add an Authentication message with a private type as a machine-readable
+  test marker.
 
 ## Later
 

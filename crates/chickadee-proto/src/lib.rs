@@ -38,13 +38,41 @@ pub enum Command {
     DisplayText { text: String },
     /// Begin a transmit session. The stick grants a lease that must be renewed.
     #[serde(rename = "tx.start")]
-    TxStart { signal: String },
+    TxStart {
+        signal: String,
+        /// Where the stick should say it is, in degrees. Required for `bt4`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lat: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lon: Option<f64>,
+        /// The host's clock, in Unix seconds. Required for `bt4`: the stick
+        /// has no clock of its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        time: Option<f64>,
+        /// Transmit power in dBm. Absent means the stick's default, its lowest.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        power_dbm: Option<i32>,
+        /// Time limit for this session. Absent means the stick's default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_ms: Option<u64>,
+    },
     /// Keep the current session alive.
     #[serde(rename = "lease.renew")]
-    LeaseRenew,
+    LeaseRenew {
+        /// The host's clock, in Unix seconds, so the stick's copy does not drift.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        time: Option<f64>,
+    },
     /// End the current session. Succeeds even when none is running.
     #[serde(rename = "tx.stop")]
     TxStop,
+}
+
+impl Command {
+    /// `tx.start` for a signal that needs nothing but its name.
+    pub fn tx_start(signal: &str) -> Self {
+        Command::TxStart { signal: signal.to_string(), lat: None, lon: None, time: None, power_dbm: None, max_ms: None }
+    }
 }
 
 /// A request line: a command plus the id the response must echo.
@@ -112,17 +140,49 @@ pub struct Hello {
     /// Limits the firmware enforces.
     #[serde(default)]
     pub limits: Limits,
+    /// Who the stick says it is on the air. Fixed in the firmware.
+    #[serde(default)]
+    pub rid: Option<RidIdentity>,
 }
 
-/// Limits the firmware enforces, as reported by `hello`. Zero means unknown.
+/// Limits the firmware enforces, as reported by `hello`. For the durations,
+/// zero means unknown; the power fields are absent on firmware with no radio.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Limits {
     /// A session stops if this long passes without `lease.renew`.
     #[serde(default)]
     pub lease_ms: u64,
-    /// A session stops after this long no matter what.
+    /// A session stops after this long unless `tx.start` asked for longer.
+    /// Zero on firmware older than 0.4, where `session_max_ms` was the only limit.
+    #[serde(default)]
+    pub session_default_ms: u64,
+    /// The longest session `tx.start` can ask for.
     #[serde(default)]
     pub session_max_ms: u64,
+    /// Transmit power, in dBm: the lowest, the one used when none is asked
+    /// for, the highest this firmware allows, and the step between settings.
+    #[serde(default)]
+    pub power_min_dbm: Option<i32>,
+    #[serde(default)]
+    pub power_default_dbm: Option<i32>,
+    #[serde(default)]
+    pub power_max_dbm: Option<i32>,
+    #[serde(default)]
+    pub power_step_db: Option<i32>,
+}
+
+/// The identity the stick broadcasts in Remote ID messages.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RidIdentity {
+    /// The Basic ID type, e.g. `specific_session_id`.
+    #[serde(default)]
+    pub id_type: String,
+    /// The Basic ID text.
+    #[serde(default)]
+    pub id: String,
+    /// The Self-ID description text.
+    #[serde(default)]
+    pub self_id: String,
 }
 
 /// Payload of a successful `tx.start` or `lease.renew`.
@@ -131,6 +191,9 @@ pub struct Lease {
     pub lease_ms: u64,
     #[serde(default)]
     pub session_remaining_ms: u64,
+    /// The power the stick will transmit at. `tx.start` for a radio signal only.
+    #[serde(default)]
+    pub power_dbm: Option<i32>,
 }
 
 /// Payload of a successful `status`.
@@ -147,7 +210,15 @@ pub struct Status {
     pub session_remaining_ms: Option<u64>,
     #[serde(default)]
     pub lease_remaining_ms: Option<u64>,
-    /// Why the last session ended: `stopped`, `lease_expired` or `limit`.
+    /// Present while transmitting a radio signal: the power and the position
+    /// being broadcast.
+    #[serde(default)]
+    pub power_dbm: Option<i32>,
+    #[serde(default)]
+    pub lat: Option<f64>,
+    #[serde(default)]
+    pub lon: Option<f64>,
+    /// Why the last session ended: `stopped`, `lease_expired`, `limit` or `error`.
     #[serde(default)]
     pub last_stop: Option<String>,
 }
@@ -193,15 +264,25 @@ mod tests {
         let cases = [
             (Command::Hello, "{\"id\":1,\"cmd\":\"hello\"}\n"),
             (Command::Status, "{\"id\":1,\"cmd\":\"status\"}\n"),
+            (Command::DisplayText { text: "hi".into() }, "{\"id\":1,\"cmd\":\"display.text\",\"text\":\"hi\"}\n"),
+            (Command::tx_start("led"), "{\"id\":1,\"cmd\":\"tx.start\",\"signal\":\"led\"}\n"),
             (
-                Command::DisplayText { text: "hi".into() },
-                "{\"id\":1,\"cmd\":\"display.text\",\"text\":\"hi\"}\n",
+                Command::TxStart {
+                    signal: "bt4".into(),
+                    lat: Some(40.9),
+                    lon: Some(-95.6),
+                    time: Some(1794000000.5),
+                    power_dbm: Some(-6),
+                    max_ms: Some(600_000),
+                },
+                "{\"id\":1,\"cmd\":\"tx.start\",\"signal\":\"bt4\",\"lat\":40.9,\"lon\":-95.6,\
+                 \"time\":1794000000.5,\"power_dbm\":-6,\"max_ms\":600000}\n",
             ),
+            (Command::LeaseRenew { time: None }, "{\"id\":1,\"cmd\":\"lease.renew\"}\n"),
             (
-                Command::TxStart { signal: "led".into() },
-                "{\"id\":1,\"cmd\":\"tx.start\",\"signal\":\"led\"}\n",
+                Command::LeaseRenew { time: Some(1794000001.0) },
+                "{\"id\":1,\"cmd\":\"lease.renew\",\"time\":1794000001.0}\n",
             ),
-            (Command::LeaseRenew, "{\"id\":1,\"cmd\":\"lease.renew\"}\n"),
             (Command::TxStop, "{\"id\":1,\"cmd\":\"tx.stop\"}\n"),
         ];
         for (cmd, want) in cases {
@@ -235,7 +316,31 @@ mod tests {
         let Line::Response(resp) = classify(line) else { panic!("not a response") };
         let hello: Hello = resp.payload().unwrap();
         assert_eq!(hello.signals, vec!["led"]);
-        assert_eq!(hello.limits, Limits { lease_ms: 3000, session_max_ms: 300_000 });
+        assert_eq!(hello.limits, Limits { lease_ms: 3000, session_max_ms: 300_000, ..Limits::default() });
+        assert_eq!(hello.rid, None);
+    }
+
+    #[test]
+    fn hello_with_a_radio() {
+        let line = r#"{"id":1,"ok":true,"device":"chickadeeBRRD","board":"b","fw":"0.4.0","proto":0,"caps":["display.text","tx","led.selftest"],"signals":["led","bt4"],"limits":{"lease_ms":3000,"session_default_ms":300000,"session_max_ms":3600000,"power_min_dbm":-24,"power_default_dbm":-24,"power_max_dbm":0,"power_step_db":3,"text_max":64},"rid":{"id_type":"specific_session_id","id":"CHICKADEEBRRD-TEST","self_id":"chickadeeBRRD:TEST"}}"#;
+        let Line::Response(resp) = classify(line) else { panic!("not a response") };
+        let hello: Hello = resp.payload().unwrap();
+        assert_eq!(hello.signals, vec!["led", "bt4"]);
+        assert_eq!(hello.limits.session_default_ms, 300_000);
+        assert_eq!(hello.limits.session_max_ms, 3_600_000);
+        assert_eq!(hello.limits.power_default_dbm, Some(-24));
+        assert_eq!(hello.limits.power_max_dbm, Some(0));
+        assert_eq!(hello.rid.unwrap().id, "CHICKADEEBRRD-TEST");
+    }
+
+    #[test]
+    fn status_while_broadcasting() {
+        let line = r#"{"id":4,"ok":true,"state":"transmitting","uptime_ms":2200,"signal":"bt4","session_remaining_ms":298800,"lease_remaining_ms":2800,"power_dbm":-24,"lat":40.9,"lon":-95.6}"#;
+        let Line::Response(resp) = classify(line) else { panic!("not a response") };
+        let status: Status = resp.payload().unwrap();
+        assert_eq!(status.power_dbm, Some(-24));
+        assert_eq!(status.lat, Some(40.9));
+        assert_eq!(status.lon, Some(-95.6));
     }
 
     #[test]

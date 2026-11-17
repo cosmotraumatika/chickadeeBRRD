@@ -110,8 +110,14 @@ idf.py -B ~/build/chickadee-fw -p /dev/ttyACM0 build flash
 
 ```bash
 cargo test                          # protocol crate and CLI
-sh firmware/host_test/run.sh        # the firmware's session rules, on the PC
+sh firmware/host_test/run.sh        # the firmware's rules, on the PC
 ```
+
+The firmware's host tests come in three parts: the session rules, the Remote
+ID messages (built, then decoded with the reference decoder), and the command
+handler and control loop against a stand-in radio. The third needs cJSON,
+which ships with ESP-IDF, so it runs only in a terminal where ESP-IDF is
+activated and is skipped with a note elsewhere.
 
 The shared file `testdata/vectors/v0-device-lines.jsonl` is the protocol's
 conformance set; any new host implementation should classify every line in
@@ -122,7 +128,23 @@ it as labelled.
 ```bash
 python3 tools/fakestick.py                 # prints a port such as /dev/pts/3
 chickchirp --port /dev/pts/3 info
-FAKESTICK_SESSION_MAX_MS=2000 python3 tools/fakestick.py    # a short session limit, for testing
+FAKESTICK_SESSION_DEFAULT_MS=2000 python3 tools/fakestick.py    # a short default limit, for testing
+```
+
+The fake stick offers `led` and `bt4` and applies the same checks as the
+firmware. It transmits nothing; it prints what a real stick would do.
+
+## After changing `sdkconfig.defaults`
+
+ESP-IDF reads `sdkconfig.defaults` only when there is no `firmware/sdkconfig`
+yet. When the defaults change, as they did in 0.4.0 to turn Bluetooth on,
+delete the generated file and configure again:
+
+```bash
+cd /mnt/c/Dev/chickadeeBRRD/firmware
+rm -f sdkconfig
+idf.py -B ~/build/chickadee-fw set-target esp32c5
+idf.py -B ~/build/chickadee-fw -p /dev/ttyACM0 build flash
 ```
 
 ## Checks on real hardware
@@ -135,6 +157,13 @@ After a firmware change, these confirm the things only hardware can show:
 3. `chickchirp start --signal led`, then `pkill -9 chickchirp` from another
    terminal: the LED goes dark and the screen reads "last: lease expired"
    within 3 seconds.
+4. `chickchirp info` lists `bt4` among the signals. If it does not, the
+   Bluetooth radio did not start; `chickchirp monitor` shows why after a
+   reset.
+5. `chickchirp start --signal bt4 --lat <lat> --lon <lon>`: the LED blinks
+   blue, the screen shows "-24 dBm  lease held", and a receiver shows
+   `CHICKADEEBRRD-TEST` at that position. Then `pkill -9 chickchirp`: the
+   receiver stops hearing it within 3 seconds.
 
 ## Troubleshooting
 
@@ -145,4 +174,6 @@ After a firmware change, these confirm the things only hardware can show:
 | `cannot open /dev/ttyACM0: Permission denied` | Your user is not in the port's group | See "Attaching the stick" |
 | `Unable to acquire exclusive lock` | Another program has the port, usually a running `chickchirp start` | Stop it, or wait for it to finish |
 | `no response within 2s` | The stick is not running this firmware | Flash it |
+| `info` shows no `bt4` after flashing 0.4.0 | The build used an old `sdkconfig` without Bluetooth | See "After changing `sdkconfig.defaults`" |
+| `the stick ended the session: the radio could not transmit` | The radio refused to start or did not confirm the power | Run `chickchirp monitor`, reset the stick, start again and read the `bt4` log lines |
 | The screen still shows the old firmware version after a flash | The flash ran in a terminal without ESP-IDF, so nothing was flashed | Check for `(venv)` in the prompt, then flash again |

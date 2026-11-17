@@ -1,8 +1,8 @@
 # chickadeeBRRD
 
-A pocket Remote ID tester. A small USB stick (a LilyGo T-Dongle-C5) that will
-send a short-range Remote ID test signal, controlled over USB serial from
-Linux, Windows 11 and Android. The chickadee calls out its own name; Remote ID
+A pocket Remote ID tester. A small USB stick (a LilyGo T-Dongle-C5) that
+sends a short-range Remote ID test signal, controlled over USB serial from
+Linux today, and from Windows 11 and Android later. The chickadee calls out its own name; Remote ID
 is a drone calling out its identity.
 
 It is for people who build drones, or the equipment that listens for them, and
@@ -10,15 +10,17 @@ want to test receivers on a desk instead of flying.
 
 ## Status
 
-**No radio code exists yet.** The stick identifies itself, shows text on its
-screen, and runs a leased session in which its LED stands in for the radio.
+Firmware 0.4.0 adds the first radio signal: Remote ID test messages over
+Bluetooth 4, under a fixed test identity. **It has been built and tested on a
+PC against a stand-in radio. It has not yet been received by a bench
+receiver**, and the power it radiates has not been measured.
 
 | Phase | Goal | State |
 |---|---|---|
 | 0 | Bench: stick visible to the build machine | Done |
 | 1 | Hello, stick: the CLI puts a message on the screen | Done |
 | 2 | Lease: a session that stops when the host goes away | Done |
-| 3 | One signal: Bluetooth 4 Remote ID seen by a bench receiver | Next |
+| 3 | One signal: Bluetooth 4 Remote ID seen by a bench receiver | Built; not yet received on the bench |
 | 4 | Windows: the same CLI on a COM port | Not started |
 | 5 | Android app | Not started |
 | 6 | Polish and share | Not started |
@@ -33,10 +35,18 @@ hold even if someone changes the CLI or the app.
 
 - A session runs only while a host renews a 3-second lease. If the host
   crashes, hangs or is unplugged, the stick stops by itself.
-- A session ends after 5 minutes regardless.
-- The rules are a small state machine with its own tests.
+- A session ends after 5 minutes unless you ask for longer, and never runs
+  past 60 minutes.
+- It transmits at its lowest power, -24 dBm, unless you ask for more, and
+  never above 0 dBm.
+- It broadcasts one identity, `CHICKADEEBRRD-TEST`, with the Self-ID text
+  `chickadeeBRRD:TEST`. No command changes it.
+- The rules have tests that run on a PC.
 
-More in [docs/safety.md](docs/safety.md).
+Whether, where and how you may transmit Remote ID test messages over the air
+is a legal question this project does not answer. More in
+[docs/safety.md](docs/safety.md); what goes on the air is in
+[docs/remote-id.md](docs/remote-id.md).
 
 ## Quick start
 
@@ -56,7 +66,8 @@ idf.py -p /dev/ttyACM0 build flash
 # try it
 chickchirp info
 chickchirp display "chick-a-dee-dee"
-chickchirp start --signal led      # Ctrl-C to stop
+chickchirp start --signal led      # the LED blinks; Ctrl-C to stop
+chickchirp start --signal bt4 --lat 40.9 --lon -95.6   # Remote ID over Bluetooth 4
 ```
 
 ## The CLI
@@ -66,11 +77,29 @@ chickchirp devices            # list attached sticks
 chickchirp info               # firmware, protocol, board, capabilities, limits
 chickchirp status             # what the stick is doing now
 chickchirp display "hello"    # show a message on the screen
-chickchirp start --signal led # run a session until Ctrl-C; --duration 60s to limit it
+chickchirp start --signal led # run a session until Ctrl-C
 chickchirp stop               # end a session left running by a host that died
 chickchirp monitor            # everything the stick sends, until Ctrl-C
 chickchirp raw '{"cmd":"status"}'
 ```
+
+`start` takes these options:
+
+| Option | Meaning | Default |
+|---|---|---|
+| `--signal` | `led` or `bt4`; `chickchirp info` lists what the stick offers | required |
+| `--lat`, `--lon` | The position to broadcast, in degrees. Needed by `bt4`. Also read from `CHICKCHIRP_LAT` and `CHICKCHIRP_LON` | none |
+| `--duration` | Time limit, such as `90s`, `10m` or `1h` | The stick's own: 5 minutes. Longest: 60 minutes |
+| `--power` | Transmit power in dBm, from -24 to 0 in steps of 3 | The stick's lowest: -24 |
+
+```bash
+chickchirp start --signal bt4 --lat 40.9 --lon -95.6
+chickchirp start --signal bt4 --lat 40.9 --lon -95.6 --power -12 --duration 20m
+```
+
+`start` holds the serial port until it ends, so a second `chickchirp` command
+is refused meanwhile. The stick's screen shows the signal, the power and the
+countdown.
 
 - The port is found automatically when exactly one stick is attached.
   Otherwise use `--port` or set `CHICKCHIRP_PORT`.
@@ -91,7 +120,7 @@ chickchirp raw '{"cmd":"status"}'
 ## Without hardware
 
 `tools/fakestick.py` is a pretend stick on a pseudo-terminal that speaks the
-same protocol, lease included.
+same protocol, lease and both signals included. It transmits nothing.
 
 ```bash
 python3 tools/fakestick.py          # prints a port such as /dev/pts/3
@@ -105,7 +134,8 @@ chickchirp --port /dev/pts/3 info
 | `crates/chickadee-proto/` | Protocol message types and line codec, no I/O |
 | `crates/chickchirp/` | The command-line tool |
 | `firmware/` | ESP-IDF project for the stick (target `esp32c5`) |
-| `firmware/host_test/` | Tests for the session rules that run on a PC |
+| `firmware/components/opendroneid/` | The Open Drone ID reference encoder, unmodified |
+| `firmware/host_test/` | Tests for the firmware's rules and messages that run on a PC |
 | `tools/fakestick.py` | The pretend stick |
 | `testdata/vectors/` | Protocol lines every implementation must handle |
 | `docs/` | Protocol, development setup, hardware notes, safety, roadmap |
@@ -115,7 +145,8 @@ chickchirp --port /dev/pts/3 info
 - [docs/protocol.md](docs/protocol.md): how a host talks to the stick
 - [docs/development.md](docs/development.md): setting up, building, flashing, troubleshooting
 - [docs/hardware.md](docs/hardware.md): the board, its pins, and what was learned bringing it up
-- [docs/safety.md](docs/safety.md): what the firmware enforces, and what is your responsibility
+- [docs/remote-id.md](docs/remote-id.md): exactly what the stick puts on the air
+- [docs/safety.md](docs/safety.md): what the firmware enforces, what has been tested, and what is your responsibility
 - [docs/roadmap.md](docs/roadmap.md): the phases and the decisions taken so far
 - [CHANGELOG.md](CHANGELOG.md): what changed in each firmware version
 
@@ -128,6 +159,9 @@ Licensed under the GNU Affero General Public License, version 3; see
 
 - `firmware/main/font8x8.h` is from
   [font8x8](https://github.com/dhepper/font8x8) by Daniel Hepper, public domain.
+- `firmware/components/opendroneid/` is from
+  [opendroneid-core-c](https://github.com/opendroneid/opendroneid-core-c),
+  Apache License 2.0, unmodified; its licence is in that directory.
 - The firmware builds against [ESP-IDF](https://github.com/espressif/esp-idf)
   (Apache-2.0) and uses the cJSON it bundles (MIT).
 - The board's pin map and display settings were taken from LilyGo's published

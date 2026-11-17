@@ -21,7 +21,7 @@ session_stop_t session_tick(session_t *s, int64_t now_ms)
     if (!s->active) {
         return SESSION_STOP_NONE;
     }
-    if (now_ms - s->began_ms >= SESSION_MAX_MS) {
+    if (now_ms - s->began_ms >= s->max_ms) {
         end(s, SESSION_STOP_LIMIT);
         return SESSION_STOP_LIMIT;
     }
@@ -32,7 +32,7 @@ session_stop_t session_tick(session_t *s, int64_t now_ms)
     return SESSION_STOP_NONE;
 }
 
-bool session_start(session_t *s, const char *signal, int64_t now_ms)
+bool session_start(session_t *s, const char *signal, int64_t now_ms, int64_t max_ms)
 {
     session_tick(s, now_ms);
     if (s->active) {
@@ -43,6 +43,12 @@ bool session_start(session_t *s, const char *signal, int64_t now_ms)
     s->signal[sizeof(s->signal) - 1] = '\0';
     s->began_ms = now_ms;
     s->lease_until_ms = now_ms + SESSION_LEASE_MS;
+    if (max_ms <= 0) {
+        max_ms = SESSION_DEFAULT_MS;
+    } else if (max_ms > SESSION_HARD_MAX_MS) {
+        max_ms = SESSION_HARD_MAX_MS;
+    }
+    s->max_ms = max_ms;
     return true;
 }
 
@@ -66,12 +72,22 @@ bool session_stop(session_t *s, int64_t now_ms)
     return true;
 }
 
+bool session_fail(session_t *s, int64_t now_ms)
+{
+    session_tick(s, now_ms);
+    if (!s->active) {
+        return false;
+    }
+    end(s, SESSION_STOP_ERROR);
+    return true;
+}
+
 int64_t session_remaining_ms(const session_t *s, int64_t now_ms)
 {
     if (!s->active) {
         return 0;
     }
-    int64_t left = SESSION_MAX_MS - (now_ms - s->began_ms);
+    int64_t left = s->max_ms - (now_ms - s->began_ms);
     return left > 0 ? left : 0;
 }
 
@@ -93,6 +109,8 @@ const char *session_stop_name(session_stop_t reason)
         return "lease_expired";
     case SESSION_STOP_LIMIT:
         return "limit";
+    case SESSION_STOP_ERROR:
+        return "error";
     default:
         return "none";
     }

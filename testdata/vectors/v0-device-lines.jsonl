@@ -16,3 +16,9 @@
 {"line": "{\"id\":6,\"ok\":false,\"err\":\"not_active\"}", "kind": "response"}
 {"line": "{\"ev\":\"state\",\"state\":\"transmitting\",\"signal\":\"led\"}", "kind": "event"}
 {"line": "{\"ev\":\"state\",\"state\":\"idle\",\"reason\":\"lease_expired\"}", "kind": "event"}
+{"line": "{\"id\":1,\"ok\":true,\"device\":\"chickadeeBRRD\",\"board\":\"lilygo-t-dongle-c5\",\"fw\":\"0.4.0\",\"proto\":0,\"caps\":[\"display.text\",\"tx\",\"led.selftest\"],\"signals\":[\"led\",\"bt4\"],\"limits\":{\"lease_ms\":3000,\"session_default_ms\":300000,\"session_max_ms\":3600000,\"power_min_dbm\":-24,\"power_default_dbm\":-24,\"power_max_dbm\":0,\"power_step_db\":3,\"text_max\":64},\"rid\":{\"id_type\":\"specific_session_id\",\"id\":\"CHICKADEEBRRD-TEST\",\"self_id\":\"chickadeeBRRD:TEST\"}}", "kind": "response"}
+{"line": "{\"id\":3,\"ok\":true,\"lease_ms\":3000,\"session_remaining_ms\":300000,\"power_dbm\":-24}", "kind": "response"}
+{"line": "{\"ev\":\"state\",\"state\":\"transmitting\",\"signal\":\"bt4\",\"power_dbm\":-24}", "kind": "event"}
+{"line": "{\"id\":4,\"ok\":true,\"state\":\"transmitting\",\"uptime_ms\":2200,\"signal\":\"bt4\",\"session_remaining_ms\":298800,\"lease_remaining_ms\":2800,\"power_dbm\":-24,\"lat\":40.9,\"lon\":-95.6}", "kind": "response"}
+{"line": "{\"id\":2,\"ok\":false,\"err\":\"limit_exceeded\",\"msg\":\"power is limited to 0 dBm\"}", "kind": "response"}
+{"line": "{\"ev\":\"state\",\"state\":\"idle\",\"reason\":\"error\"}", "kind": "event"}

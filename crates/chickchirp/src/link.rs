@@ -122,10 +122,7 @@ impl<T: Read + Write> Link<T> {
                     return if resp.ok {
                         Ok(resp)
                     } else {
-                        Err(LinkError::Device {
-                            err: resp.err.unwrap_or_else(|| "error".into()),
-                            msg: resp.msg,
-                        })
+                        Err(LinkError::Device { err: resp.err.unwrap_or_else(|| "error".into()), msg: resp.msg })
                     };
                 }
                 other => on_other(&other),
@@ -205,9 +202,7 @@ mod tests {
     fn device_error_surfaces_code_and_message() {
         let script = "{\"id\":1,\"ok\":false,\"err\":\"not_implemented\",\"msg\":\"display driver pending\"}\n";
         let mut link = Link::with_start_id(Fake::sending(script), 1);
-        let err = link
-            .request(&Command::DisplayText { text: "hi".into() }, SHORT, &mut |_| {})
-            .unwrap_err();
+        let err = link.request(&Command::DisplayText { text: "hi".into() }, SHORT, &mut |_| {}).unwrap_err();
         match err {
             LinkError::Device { err, msg } => {
                 assert_eq!(err, "not_implemented");

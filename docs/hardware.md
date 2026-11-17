@@ -81,8 +81,17 @@ GPIO 4 and 5 as LilyGo documents; that route is untested here.
 
 ## Bluetooth transmit power
 
-For the radio phases: ESP-IDF v5.5 lists sixteen Bluetooth LE power levels
-for the C5, from -24 dBm to +20 dBm, mostly in 3 dB steps.
+ESP-IDF v5.5 lists sixteen Bluetooth LE power levels for the C5, from
+-24 dBm to +20 dBm, mostly in 3 dB steps. The firmware uses the nine from
+-24 dBm to 0 dBm.
+
+- The firmware sets the power with `esp_ble_tx_power_set` and reads it back
+  with `esp_ble_tx_power_get` before each transmission.
+- The controller's build-time default (`CONFIG_BT_LE_DFT_TX_POWER_LEVEL_*`)
+  has a gap in ESP-IDF 5.5: choosing -24, -21 or -18 dBm there gives 0 dBm.
+  `sdkconfig.defaults` therefore picks -15 dBm, the lowest that takes
+  effect, and the firmware lowers it to -24 dBm at boot.
+- None of these figures has been measured on this board.
 
 ## Towards a polished device
 

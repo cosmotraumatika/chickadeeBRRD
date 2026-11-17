@@ -305,7 +305,7 @@ void display_show_idle(const char *fw_version, const char *note)
     flush();
 }
 
-void display_show_tx(const char *signal, int seconds_left)
+void display_show_tx(const char *signal, int seconds_left, const char *note)
 {
     if (!s_ready) {
         return;
@@ -321,7 +321,10 @@ void display_show_tx(const char *signal, int seconds_left)
     draw_string(2 + 6 * 16 + 6, 26, signal, strlen(signal), 1, C_GREY);
     draw_string(2, 44, clock, strlen(clock), 2, C_WHITE);
     draw_string(2 + (int)strlen(clock) * 16 + 6, 52, "left", 4, 1, C_GREY);
-    draw_string(2, 68, "host lease held", 15, 1, C_GREY);
+    if (note != NULL) {
+        size_t n = strlen(note);
+        draw_string(2, 68, note, n > 19 ? 19 : n, 1, C_GREY);
+    }
     flush();
 }
 

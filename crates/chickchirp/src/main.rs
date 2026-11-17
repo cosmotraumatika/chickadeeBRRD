@@ -10,7 +10,7 @@ use std::io::{self, IsTerminal, Write};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use chickadee_proto::{classify, Command, Hello, Lease, Line, Status, PROTO_VERSION};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -76,9 +76,20 @@ enum Cmd {
         /// Signal type to send; `chickchirp info` lists what the stick offers
         #[arg(long, value_name = "SIGNAL")]
         signal: String,
-        /// Stop after this long, e.g. 60s. The stick's own limit still applies
+        /// Time limit for the session, e.g. 90s or 10m. Without it the stick
+        /// applies its default (5 minutes); the longest it allows is 60m
         #[arg(long, value_parser = parse_duration, value_name = "DURATION")]
         duration: Option<Duration>,
+        /// Latitude to broadcast, in degrees, north positive. Needed by radio signals
+        #[arg(long, env = "CHICKCHIRP_LAT", allow_negative_numbers = true, value_name = "DEGREES")]
+        lat: Option<f64>,
+        /// Longitude to broadcast, in degrees, east positive. Needed by radio signals
+        #[arg(long, env = "CHICKCHIRP_LON", allow_negative_numbers = true, value_name = "DEGREES")]
+        lon: Option<f64>,
+        /// Transmit power in dBm. Without it the stick uses its lowest setting;
+        /// `chickchirp info` shows the range
+        #[arg(long, allow_negative_numbers = true, value_name = "DBM")]
+        power: Option<i32>,
     },
     /// End a running session
     Stop,
@@ -147,12 +158,26 @@ fn run(cli: Cli) -> Result<(), Failure> {
                 if !hello.signals.is_empty() {
                     println!("signals   {}", hello.signals.join(", "));
                 }
-                if hello.limits.lease_ms > 0 {
+                let limits = &hello.limits;
+                if limits.lease_ms > 0 && limits.session_default_ms > 0 {
+                    println!(
+                        "limits    lease {}, session {} unless asked, {} at most",
+                        human_duration(limits.lease_ms),
+                        human_duration(limits.session_default_ms),
+                        human_duration(limits.session_max_ms)
+                    );
+                } else if limits.lease_ms > 0 {
                     println!(
                         "limits    lease {}, session {}",
-                        human_duration(hello.limits.lease_ms),
-                        human_duration(hello.limits.session_max_ms)
+                        human_duration(limits.lease_ms),
+                        human_duration(limits.session_max_ms)
                     );
+                }
+                if let (Some(default), Some(max)) = (limits.power_default_dbm, limits.power_max_dbm) {
+                    println!("power     {default} dBm unless asked, {max} dBm at most");
+                }
+                if let Some(rid) = &hello.rid {
+                    println!("identity  {}  \"{}\"", rid.id, rid.self_id);
                 }
                 println!("port      {port}");
             }
@@ -168,8 +193,13 @@ fn run(cli: Cli) -> Result<(), Failure> {
                     .payload()
                     .or_else(|e| fail(EXIT_DEVICE_ERROR, format!("the stick's status reply is malformed: {e}")))?;
                 if status.state == "transmitting" {
+                    let power = status.power_dbm.map(|p| format!(" at {p} dBm")).unwrap_or_default();
+                    let position = match (status.lat, status.lon) {
+                        (Some(lat), Some(lon)) => format!("  position {lat}, {lon}"),
+                        _ => String::new(),
+                    };
                     println!(
-                        "transmitting {}  {} left",
+                        "transmitting {}{power}  {} left{position}",
                         status.signal.as_deref().unwrap_or("?"),
                         human_duration(status.session_remaining_ms.unwrap_or(0))
                     );
@@ -183,7 +213,9 @@ fn run(cli: Cli) -> Result<(), Failure> {
             }
             Ok(())
         }
-        Cmd::Start { signal, duration } => start(&cli, signal, *duration),
+        Cmd::Start { signal, duration, lat, lon, power } => {
+            start(&cli, &StartOptions { signal, duration: *duration, lat: *lat, lon: *lon, power: *power })
+        }
         Cmd::Stop => {
             let (_, mut link) = open(&cli)?;
             let resp = ask(&mut link, &Command::TxStop, &cli)?;
@@ -239,11 +271,90 @@ fn run(cli: Cli) -> Result<(), Failure> {
     }
 }
 
+/// What `chickchirp start` was asked for.
+struct StartOptions<'a> {
+    signal: &'a str,
+    duration: Option<Duration>,
+    lat: Option<f64>,
+    lon: Option<f64>,
+    power: Option<i32>,
+}
+
+/// The LED stand-in is the one signal that is not a radio transmission.
+fn is_radio(signal: &str) -> bool {
+    signal != "led"
+}
+
+/// The host clock as Unix seconds, to the millisecond.
+fn unix_now() -> f64 {
+    let since = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    since.as_millis() as f64 / 1000.0
+}
+
+/// Check what was asked for against what the stick says it allows, so a
+/// mistake is reported here in plain words. The stick checks again itself.
+fn check_start(opts: &StartOptions, hello: &Hello) -> Result<(), Failure> {
+    let signal = opts.signal;
+    if is_radio(signal) {
+        let (Some(lat), Some(lon)) = (opts.lat, opts.lon) else {
+            return fail(
+                2,
+                format!(
+                    "signal '{signal}' broadcasts a position: give --lat and --lon \
+                     (or set CHICKCHIRP_LAT and CHICKCHIRP_LON)"
+                ),
+            );
+        };
+        if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+            return fail(2, "--lat must be within -90..90 and --lon within -180..180");
+        }
+        if lat == 0.0 && lon == 0.0 {
+            return fail(2, "0, 0 means \"position unknown\" in Remote ID; give the real position");
+        }
+    } else if opts.power.is_some() {
+        return fail(2, format!("signal '{signal}' has no power setting"));
+    }
+    if let Some(power) = opts.power {
+        let limits = &hello.limits;
+        if let Some(max) = limits.power_max_dbm {
+            if power > max {
+                return fail(2, format!("--power {power} is above this firmware's ceiling of {max} dBm"));
+            }
+        }
+        if let (Some(min), Some(max), Some(step)) = (limits.power_min_dbm, limits.power_max_dbm, limits.power_step_db) {
+            if step > 0 && (power < min || (power - min) % step != 0) {
+                let settings: Vec<String> = (min..=max).step_by(step as usize).map(|p| p.to_string()).collect();
+                return fail(
+                    2,
+                    format!("--power {power} is not a setting the radio has; choose from {}", settings.join(", ")),
+                );
+            }
+        }
+    }
+    if let Some(duration) = opts.duration {
+        let max = hello.limits.session_max_ms;
+        if max > 0 && duration.as_millis() > u128::from(max) {
+            return fail(
+                2,
+                format!(
+                    "--duration {} is longer than the stick allows ({})",
+                    human_duration(duration.as_millis() as u64),
+                    human_duration(max)
+                ),
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Run a transmit session: start it, keep renewing the lease, stop on Ctrl-C.
 ///
 /// The stick stops by itself if the renewals cease, so nothing here is relied
 /// on for safety; this loop only keeps a wanted session alive.
-fn start(cli: &Cli, signal: &str, duration: Option<Duration>) -> Result<(), Failure> {
+fn start(cli: &Cli, opts: &StartOptions) -> Result<(), Failure> {
+    let signal = opts.signal;
+    let duration = opts.duration;
+    let radio = is_radio(signal);
     let (_, mut link) = open(cli)?;
     let json = cli.json;
     let verbose = cli.verbose;
@@ -268,6 +379,7 @@ fn start(cli: &Cli, signal: &str, duration: Option<Duration>) -> Result<(), Fail
             format!("the stick does not offer signal '{signal}'; it offers: {}", hello.signals.join(", ")),
         );
     }
+    check_start(opts, &hello)?;
 
     let interrupted = Arc::new(AtomicBool::new(false));
     {
@@ -276,23 +388,49 @@ fn start(cli: &Cli, signal: &str, duration: Option<Duration>) -> Result<(), Fail
             .or_else(|e| fail(EXIT_IO, format!("cannot install the Ctrl-C handler: {e}")))?;
     }
 
+    let request = Command::TxStart {
+        signal: signal.to_string(),
+        lat: opts.lat.filter(|_| radio),
+        lon: opts.lon.filter(|_| radio),
+        time: radio.then(unix_now),
+        power_dbm: opts.power,
+        max_ms: duration.map(|d| d.as_millis() as u64),
+    };
+    // Timed from before the request, so this clock never runs behind the stick's.
+    let began = Instant::now();
     let lease: Lease = link
-        .request(&Command::TxStart { signal: signal.to_string() }, cli.timeout, &mut seen)
+        .request(&request, cli.timeout, &mut seen)
         .map_err(|e| explain(e, cli))?
         .payload()
         .or_else(|e| fail(EXIT_DEVICE_ERROR, format!("the stick's tx.start reply is malformed: {e}")))?;
 
     // Renew three times per lease so one lost renewal does not end the session.
     let renew_every = Duration::from_millis((lease.lease_ms / 3).max(100));
-    let began = Instant::now();
-    let mut next_renew = began + renew_every;
+    let mut next_renew = Instant::now() + renew_every;
     let live = !json && io::stderr().is_terminal();
+    let power = lease.power_dbm.map(|p| format!("  {p} dBm")).unwrap_or_default();
     let progress = |remaining_ms: u64| {
         if live {
-            eprint!("\rtransmitting {signal}  {} left   ", human_duration(remaining_ms));
+            eprint!("\rtransmitting {signal}{power}  {} left   ", human_duration(remaining_ms));
         }
     };
     if !json {
+        if radio {
+            // Say plainly what is going on the air, from what the stick reported.
+            eprintln!("on the air: Remote ID test messages ({signal})");
+            if let Some(rid) = &hello.rid {
+                eprintln!("  identity  {}  \"{}\"", rid.id, rid.self_id);
+            }
+            if let (Some(lat), Some(lon)) = (opts.lat, opts.lon) {
+                eprintln!("  position  {lat}, {lon}");
+            }
+            if let Some(p) = lease.power_dbm {
+                eprintln!("  power     {p} dBm");
+            }
+            // To the nearest second: a moment has already passed since the start.
+            let limit_ms = (lease.session_remaining_ms + 500) / 1000 * 1000;
+            eprintln!("  limit     {}", human_duration(limit_ms));
+        }
         eprintln!("session started; Ctrl-C to stop");
     }
     progress(lease.session_remaining_ms);
@@ -312,7 +450,7 @@ fn start(cli: &Cli, signal: &str, duration: Option<Duration>) -> Result<(), Fail
                 if let Line::Event(ev) = &line {
                     if ev.ev == "state" && ev.data.get("state").and_then(Value::as_str) == Some("idle") {
                         let reason = ev.data.get("reason").and_then(Value::as_str).unwrap_or("unknown");
-                        return ended_by_stick(reason, live);
+                        return ended_by_stick(reason, live, json, duration.is_some(), began);
                     }
                 }
             }
@@ -320,7 +458,7 @@ fn start(cli: &Cli, signal: &str, duration: Option<Duration>) -> Result<(), Fail
             Err(e) => return fail(EXIT_IO, format!("lost the port: {e}")),
         }
         if Instant::now() >= next_renew {
-            match link.request(&Command::LeaseRenew, cli.timeout, &mut seen) {
+            match link.request(&Command::LeaseRenew { time: radio.then(unix_now) }, cli.timeout, &mut seen) {
                 Ok(resp) => {
                     if let Ok(lease) = resp.payload::<Lease>() {
                         progress(lease.session_remaining_ms);
@@ -334,7 +472,7 @@ fn start(cli: &Cli, signal: &str, duration: Option<Duration>) -> Result<(), Fail
                         .and_then(|r| r.payload::<Status>().ok())
                         .and_then(|s| s.last_stop)
                         .unwrap_or_else(|| "unknown".into());
-                    return ended_by_stick(&reason, live);
+                    return ended_by_stick(&reason, live, json, duration.is_some(), began);
                 }
                 Err(e) => return Err(explain(e, cli)),
             }
@@ -358,18 +496,24 @@ fn start(cli: &Cli, signal: &str, duration: Option<Duration>) -> Result<(), Fail
     Ok(())
 }
 
-/// The stick ended the session itself. Its limit is an expected end; anything
-/// else means this tool failed to keep the lease alive.
-fn ended_by_stick(reason: &str, live: bool) -> Result<(), Failure> {
+/// The stick ended the session itself. Its time limit is an expected end;
+/// anything else means the session did not run as asked.
+fn ended_by_stick(reason: &str, live: bool, json: bool, timed: bool, began: Instant) -> Result<(), Failure> {
     if live {
         eprintln!();
     }
-    if reason == "limit" {
-        println!("stopped by the stick: {}", describe_stop(reason));
-        Ok(())
-    } else {
-        fail(EXIT_DEVICE_ERROR, format!("the stick ended the session: {}", describe_stop(reason)))
+    if reason != "limit" {
+        return fail(EXIT_DEVICE_ERROR, format!("the stick ended the session: {}", describe_stop(reason)));
     }
+    if json {
+        // The idle event has already been printed.
+    } else if timed {
+        // The limit was the --duration that was asked for.
+        println!("stopped after {} (duration reached)", human_duration(began.elapsed().as_millis() as u64));
+    } else {
+        println!("stopped by the stick: {}", describe_stop(reason));
+    }
+    Ok(())
 }
 
 fn describe_stop(reason: &str) -> &str {
@@ -377,6 +521,7 @@ fn describe_stop(reason: &str) -> &str {
         "stopped" => "stopped by the host",
         "lease_expired" => "lease expired (the host went quiet)",
         "limit" => "session time limit reached",
+        "error" => "the radio could not transmit",
         other => other,
     }
 }
@@ -442,24 +587,21 @@ fn open(cli: &Cli) -> Result<(String, Link<Port>), Failure> {
         }
     };
     // The baud rate is ignored by the stick's USB serial but the API wants one.
-    let port = serialport::new(&path, 115_200)
-        .timeout(Duration::from_millis(50))
-        .open()
-        .or_else(|e| {
-            let hint = match e.kind() {
-                _ if e.description.contains("exclusive lock") => {
-                    ". Another program has the port open (a running `chickchirp start`?)"
-                }
-                serialport::ErrorKind::Io(io::ErrorKind::PermissionDenied) => {
-                    ". Your user needs to be in the group that owns the port (see `ls -l` on it)"
-                }
-                serialport::ErrorKind::NoDevice | serialport::ErrorKind::Io(io::ErrorKind::NotFound) => {
-                    ". Is the stick attached?"
-                }
-                _ => "",
-            };
-            fail(EXIT_IO, format!("cannot open {path}: {e}{hint}"))
-        })?;
+    let port = serialport::new(&path, 115_200).timeout(Duration::from_millis(50)).open().or_else(|e| {
+        let hint = match e.kind() {
+            _ if e.description.contains("exclusive lock") => {
+                ". Another program has the port open (a running `chickchirp start`?)"
+            }
+            serialport::ErrorKind::Io(io::ErrorKind::PermissionDenied) => {
+                ". Your user needs to be in the group that owns the port (see `ls -l` on it)"
+            }
+            serialport::ErrorKind::NoDevice | serialport::ErrorKind::Io(io::ErrorKind::NotFound) => {
+                ". Is the stick attached?"
+            }
+            _ => "",
+        };
+        fail(EXIT_IO, format!("cannot open {path}: {e}{hint}"))
+    })?;
     Ok((path, Link::new(port)))
 }
 
@@ -511,12 +653,16 @@ fn parse_duration(s: &str) -> Result<Duration, String> {
         (n, 0.001)
     } else if let Some(n) = s.strip_suffix('s') {
         (n, 1.0)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 60.0)
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n, 3600.0)
     } else {
         (s, 1.0)
     };
     match number.trim().parse::<f64>() {
-        Ok(v) if v.is_finite() && v > 0.0 => Ok(Duration::from_secs_f64(v * scale)),
-        _ => Err(format!("'{s}' is not a duration; try 2s or 500ms")),
+        Ok(v) if v.is_finite() && v > 0.0 && v * scale < 1e9 => Ok(Duration::from_secs_f64(v * scale)),
+        _ => Err(format!("'{s}' is not a duration; try 500ms, 90s, 10m or 1h")),
     }
 }
 
@@ -539,6 +685,8 @@ mod tests {
         assert_eq!(parse_duration("2s").unwrap(), Duration::from_secs(2));
         assert_eq!(parse_duration("500ms").unwrap(), Duration::from_millis(500));
         assert_eq!(parse_duration("1.5").unwrap(), Duration::from_millis(1500));
+        assert_eq!(parse_duration("10m").unwrap(), Duration::from_secs(600));
+        assert_eq!(parse_duration("1h").unwrap(), Duration::from_secs(3600));
         assert!(parse_duration("soon").is_err());
         assert!(parse_duration("0s").is_err());
         assert!(parse_duration("-1s").is_err());
@@ -550,6 +698,68 @@ mod tests {
         assert_eq!(human_duration(12_000), "12s");
         assert_eq!(human_duration(192_000), "3m12s");
         assert_eq!(human_duration(3_720_000), "1h02m");
+    }
+
+    fn hello_with_radio() -> Hello {
+        serde_json::from_str(
+            r#"{"proto":0,"caps":["tx"],"signals":["led","bt4"],"limits":{"lease_ms":3000,
+            "session_default_ms":300000,"session_max_ms":3600000,"power_min_dbm":-24,
+            "power_default_dbm":-24,"power_max_dbm":0,"power_step_db":3}}"#,
+        )
+        .unwrap()
+    }
+
+    fn opts(signal: &str) -> StartOptions<'_> {
+        StartOptions { signal, duration: None, lat: None, lon: None, power: None }
+    }
+
+    #[test]
+    fn a_radio_signal_needs_a_real_position() {
+        let hello = hello_with_radio();
+        assert!(check_start(&opts("led"), &hello).is_ok());
+        assert_eq!(check_start(&opts("bt4"), &hello).unwrap_err().code, 2);
+        let at = |lat, lon| StartOptions { lat: Some(lat), lon: Some(lon), ..opts("bt4") };
+        assert!(check_start(&at(40.9, -95.6), &hello).is_ok());
+        assert!(check_start(&at(0.0, 0.0), &hello).is_err());
+        assert!(check_start(&at(91.0, 10.0), &hello).is_err());
+        assert!(check_start(&at(10.0, -181.0), &hello).is_err());
+    }
+
+    #[test]
+    fn power_and_duration_are_held_to_the_sticks_limits() {
+        let hello = hello_with_radio();
+        let with = |power, duration| StartOptions { lat: Some(40.9), lon: Some(-95.6), power, duration, ..opts("bt4") };
+        assert!(check_start(&with(Some(-24), None), &hello).is_ok());
+        assert!(check_start(&with(Some(0), None), &hello).is_ok());
+        assert!(check_start(&with(Some(3), None), &hello).is_err());
+        assert!(check_start(&with(Some(-23), None), &hello).is_err());
+        assert!(check_start(&with(Some(-27), None), &hello).is_err());
+        assert!(check_start(&with(None, Some(Duration::from_secs(3600))), &hello).is_ok());
+        assert!(check_start(&with(None, Some(Duration::from_secs(3601))), &hello).is_err());
+        // The LED has no power to set.
+        assert!(check_start(&StartOptions { power: Some(-24), ..opts("led") }, &hello).is_err());
+    }
+
+    #[test]
+    fn negative_coordinates_and_power_parse() {
+        let cli = Cli::try_parse_from([
+            "chickchirp",
+            "start",
+            "--signal",
+            "bt4",
+            "--lat",
+            "-33.9",
+            "--lon",
+            "-95.6",
+            "--power",
+            "-6",
+            "--duration",
+            "10m",
+        ])
+        .unwrap();
+        let Cmd::Start { lat, lon, power, duration, .. } = cli.cmd else { panic!("not start") };
+        assert_eq!((lat, lon, power), (Some(-33.9), Some(-95.6), Some(-6)));
+        assert_eq!(duration, Some(Duration::from_secs(600)));
     }
 
     #[test]
