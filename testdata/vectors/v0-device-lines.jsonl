@@ -1,0 +1,18 @@
+{"line": "{\"id\":1,\"ok\":true,\"device\":\"chickadeeBRRD\",\"board\":\"lilygo-t-dongle-c5\",\"fw\":\"0.1.0\",\"proto\":0,\"caps\":[\"display.text\"]}", "kind": "response"}
+{"line": "{\"id\":2,\"ok\":true,\"state\":\"idle\",\"uptime_ms\":12345}", "kind": "response"}
+{"line": "{\"id\":3,\"ok\":true}\r", "kind": "response"}
+{"line": "{\"id\":4,\"ok\":false,\"err\":\"unknown_cmd\",\"msg\":\"no such command: fly\"}", "kind": "response"}
+{"line": "{\"id\":0,\"ok\":false,\"err\":\"bad_json\"}", "kind": "response"}
+{"line": "{\"ev\":\"boot\",\"fw\":\"0.1.0\",\"proto\":0}", "kind": "event"}
+{"line": "  {\"ev\":\"state\",\"state\":\"idle\"}", "kind": "event"}
+{"line": "ESP-ROM:esp32c5-eco2-20250121", "kind": "log"}
+{"line": "I (312) main_task: Calling app_main()", "kind": "log"}
+{"line": "", "kind": "log"}
+{"line": "{\"id\":7,\"ok\":tr", "kind": "log"}
+{"line": "{\"hello\":\"not ours\"}", "kind": "log"}
+{"line": "[1, 2, 3]", "kind": "log"}
+{"line": "{\"id\":\"seven\",\"ok\":true}", "kind": "log"}
+{"line": "{\"id\":5,\"ok\":true,\"lease_ms\":3000,\"session_remaining_ms\":300000}", "kind": "response"}
+{"line": "{\"id\":6,\"ok\":false,\"err\":\"not_active\"}", "kind": "response"}
+{"line": "{\"ev\":\"state\",\"state\":\"transmitting\",\"signal\":\"led\"}", "kind": "event"}
+{"line": "{\"ev\":\"state\",\"state\":\"idle\",\"reason\":\"lease_expired\"}", "kind": "event"}
